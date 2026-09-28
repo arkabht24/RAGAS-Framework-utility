@@ -1,0 +1,12 @@
+{
+  "gemini": {
+    "gemini-3.6-flash": {
+      "tier": "paid",
+      "currency": "USD",
+      "input_per_million_tokens": 0.75,
+      "output_per_million_tokens": 3.75,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verified_at": "2026-09-25"
+    }
+  }
+}

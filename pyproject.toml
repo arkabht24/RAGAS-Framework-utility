@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-api-eval"
+version = "0.1.0"
+description = "Black-box RAG API evaluation with declarative mappers, RAGAS, cost telemetry, and a dashboard."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31",
+  "pydantic>=2.7",
+  "jsonpath-ng>=1.6",
+  "pandas>=2.1",
+  "streamlit>=1.36",
+  "ragas>=0.4,<0.5",
+  "langchain-google-genai>=2.0",
+  "google-genai>=1.0",
+  "openai>=1.0,<2",
+  "instructor>=1.0",
+  "litellm<1.80"
+]
+
+[project.scripts]
+rag-eval = "rag_api_eval.cli:dashboard"
+rag-api-eval-dashboard = "rag_api_eval.cli:dashboard"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rag_api_eval = ["pricing/*.json"]
