@@ -3,7 +3,8 @@
 `rag-api-eval` evaluates a RAG application through its HTTP API. It maps an
 arbitrary request/response contract into a normalized record, runs selected
 RAGAS metrics, preserves optional application telemetry, calculates model cost
-from a local pricing catalog, and writes dashboard-ready results.
+from caller-supplied prices, applies metric thresholds, and writes
+dashboard-ready results.
 
 See the [complete user guide](docs/USAGE.md) for configuration reference,
 examples, output formats, dashboard instructions, and troubleshooting.
@@ -56,3 +57,43 @@ response_mapper={
 
 Missing optional telemetry never fails an evaluation. The dashboard reports the
 field as not received and marks cost as `N/A`.
+
+## Metric thresholds
+
+Configure deterministic pass/fail thresholds alongside the requested metrics:
+
+```python
+metrics_config={
+    "metrics": ["faithfulness", "answer_relevancy"],
+    "thresholds": {
+        "faithfulness": 0.8,
+        "answer_relevancy": 0.7
+    }
+}
+```
+
+A case passes when every applicable configured metric meets its threshold and
+fails when any applicable metric is below its threshold. Metrics that return
+`N/A` are marked not applicable and do not cause a failure. Threshold verdicts
+are saved in the result files and displayed in the dashboard.
+
+## Application pricing
+
+Pass application-model pricing from the caller; the package does not embed or
+scrape provider rates:
+
+```python
+pricing_config={
+    "catalog": {
+        "gemini": {
+            "gemini-3.6-flash": {
+                "currency": "USD",
+                "input_per_million_tokens": 0.75,
+                "output_per_million_tokens": 3.75
+            }
+        }
+    }
+}
+```
+
+If no matching provider/model entry is supplied, cost is reported as `N/A`.

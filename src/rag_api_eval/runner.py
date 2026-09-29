@@ -40,6 +40,30 @@ def _safe(value: Any) -> Any:
     return value
 
 
+def _apply_thresholds(records: list[dict], thresholds: dict[str, float]) -> None:
+    """Attach deterministic threshold verdicts without treating N/A as failure."""
+    for record in records:
+        results = {}
+        for metric, threshold in thresholds.items():
+            score = record.get("metrics", {}).get(metric)
+            applicability = record.get("metric_status", {}).get(metric, "")
+            if applicability.startswith("N/A") or not isinstance(score, (int, float)):
+                results[metric] = {"score": score, "threshold": threshold, "status": "not_applicable"}
+            else:
+                results[metric] = {
+                    "score": score,
+                    "threshold": threshold,
+                    "status": "pass" if score >= threshold else "fail",
+                }
+        applicable = [item["status"] for item in results.values() if item["status"] != "not_applicable"]
+        record["threshold_results"] = results
+        record["threshold_verdict"] = (
+            "not_configured" if not thresholds else
+            "not_applicable" if not applicable else
+            "fail" if "fail" in applicable else "pass"
+        )
+
+
 def _record(case: dict, payload: dict, mapper: ResponseMapper, pricing: PricingConfig, redact: bool) -> dict:
     answer = extract(payload, mapper.answer_path)
     if not isinstance(answer, str):
@@ -58,7 +82,7 @@ def _record(case: dict, payload: dict, mapper: ResponseMapper, pricing: PricingC
         "context_ids": extract(payload, mapper.context_ids_path, many=True),
         "citations": extract(payload, mapper.citations_path, many=True),
         "request_id": extract(payload, mapper.request_id_path), "latency_ms": extract(payload, mapper.latency_ms_path),
-        "application_usage": usage, "application_cost": calculate_cost(usage, pricing.catalog_path),
+        "application_usage": usage, "application_cost": calculate_cost(usage, pricing.catalog),
         "metrics": {}, "metric_status": {}, "raw_api_response": None if redact else payload,
     }
 
@@ -95,6 +119,7 @@ def evaluate_rag(*, api_config: dict, dataset: str | Path | list[dict], request_
         if judge is None:
             raise ValueError("judge_config is required when RAGAS metrics are selected.")
         evaluate_records(successful, metrics.metrics, judge)
+    _apply_thresholds(successful, metrics.thresholds)
     if judge and successful:
         assess_records(successful, judge)
     run_id = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
@@ -112,6 +137,12 @@ def evaluate_rag(*, api_config: dict, dataset: str | Path | list[dict], request_
             "provider": judge.provider if judge else None,
             "model": judge.model if judge else None,
             "passes": sum(record.get("judge_assessment", {}).get("status") == "pass" for record in successful),
+        },
+        "thresholds": metrics.thresholds,
+        "threshold_verdicts": {
+            "passes": sum(record.get("threshold_verdict") == "pass" for record in successful),
+            "fails": sum(record.get("threshold_verdict") == "fail" for record in successful),
+            "not_applicable": sum(record.get("threshold_verdict") == "not_applicable" for record in successful),
         },
     }
     (run_dir / "cases.json").write_text(json.dumps(_safe(records), indent=2), encoding="utf-8")

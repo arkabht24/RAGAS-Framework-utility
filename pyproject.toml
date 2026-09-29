@@ -28,6 +28,3 @@ rag-api-eval-dashboard = "rag_api_eval.cli:dashboard"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-rag_api_eval = ["pricing/*.json"]

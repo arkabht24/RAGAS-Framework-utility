@@ -362,18 +362,35 @@ Omit `judge_config` in this mode.
 
 ### Thresholds
 
-The configuration currently accepts a threshold dictionary:
+Configure deterministic pass/fail thresholds by metric name:
 
 ```python
 metrics_config = {
-    "metrics": ["faithfulness"],
-    "thresholds": {"faithfulness": 0.8},
+    "metrics": ["faithfulness", "answer_relevancy"],
+    "thresholds": {
+        "faithfulness": 0.8,
+        "answer_relevancy": 0.7,
+    },
 }
 ```
 
-Thresholds are not currently applied. They do not mark metrics as passing or
-failing and do not fail an evaluation run. The `groups` setting is also accepted
-but is not currently used to select metrics.
+Each configured threshold produces a `threshold_results` entry containing the
+metric score, configured threshold, and one of these statuses:
+
+- `pass`: the numeric score is greater than or equal to the threshold.
+- `fail`: the numeric score is below the threshold.
+- `not_applicable`: the metric is `N/A` or has no numeric score.
+
+The case-level `threshold_verdict` is `fail` if any applicable threshold fails,
+`pass` if all applicable thresholds pass, and `not_applicable` when none of the
+configured thresholds has a usable score. When no thresholds are configured,
+the verdict is `not_configured`.
+
+Threshold verdicts are deterministic and separate from the LLM judge verdict.
+They are saved in `cases.json`, aggregated in `summary.json`, and displayed in
+the dashboard. A failed threshold does not raise an exception or stop the run.
+
+The `groups` setting is accepted but is not currently used to select metrics.
 
 ## 9. Usage telemetry and cost
 
@@ -382,7 +399,7 @@ Telemetry is optional. To calculate cost, the API response must provide:
 - Model name
 - Input-token count
 - Output-token count
-- A provider that matches the pricing catalog
+- A provider and model that match a caller-supplied pricing entry
 
 Token values must be non-negative integers. Missing or invalid information is
 recorded as `missing` or `partial`, and cost is shown as unavailable. It does not
@@ -391,17 +408,26 @@ fail the evaluation.
 If `deployment` is `local` or `provider` is `ollama`, the reported model cost is
 zero and local infrastructure cost is explicitly excluded.
 
-### Custom pricing catalog
+### Caller-supplied pricing catalog
 
-Pass an alternative catalog using:
+The package does not embed or scrape provider prices. Supply the prices to use
+for the run directly in `pricing_config`:
 
 ```python
 pricing_config = {
-    "catalog_path": "config/model_pricing.json",
+    "catalog": {
+        "gemini": {
+            "gemini-3.6-flash": {
+                "currency": "USD",
+                "input_per_million_tokens": 0.75,
+                "output_per_million_tokens": 3.75,
+            }
+        }
+    }
 }
 ```
 
-The catalog must have this structure:
+The catalog has this structure:
 
 ```json
 {
@@ -422,7 +448,8 @@ Cost is calculated as:
 ```
 
 The `display_currency` option is accepted but does not currently convert
-currencies.
+currencies. If the catalog is empty or has no matching provider/model entry,
+usage remains available but application cost is reported as unavailable.
 
 ## 10. Reporting configuration
 
@@ -490,7 +517,11 @@ summary = evaluate_rag(
             "faithfulness",
             "answer_relevancy",
             "answer_correctness",
-        ]
+        ],
+        "thresholds": {
+            "faithfulness": 0.8,
+            "answer_relevancy": 0.7,
+        },
     },
     judge_config={
         "provider": "gemini",
@@ -499,6 +530,17 @@ summary = evaluate_rag(
         "concurrency": 2,
         "timeout_seconds": 90,
         "generate_assessment": True,
+    },
+    pricing_config={
+        "catalog": {
+            "gemini": {
+                "gemini-3.6-flash": {
+                    "currency": "USD",
+                    "input_per_million_tokens": 0.75,
+                    "output_per_million_tokens": 3.75,
+                }
+            }
+        }
     },
     reporting_config={
         "output_dir": "rag_eval_results",
@@ -532,6 +574,7 @@ Contains one normalized record per dataset case, including:
 - Request ID and latency
 - Usage and application cost
 - RAGAS scores and availability messages
+- Per-metric threshold results and a case-level threshold verdict
 - LLM judge assessment
 - Raw API response, unless redacted
 - Error message for failed cases
@@ -542,6 +585,7 @@ Contains aggregate run information:
 
 - Total, successful, and failed case counts
 - Requested metric names
+- Configured thresholds and aggregate pass/fail/not-applicable counts
 - Input, output, and total token counts
 - Sum of known application costs
 - Judge provider and model
@@ -580,10 +624,11 @@ rag-eval
 The dashboard displays:
 
 - Case and API-success counts
+- Threshold pass count and threshold-verdict filtering
 - Judge pass count
 - Average faithfulness
 - Token usage and application cost
-- A filterable case table
+- A filterable case table with metric and threshold outcomes
 - Per-case answers, references, metrics, judge rationale, contexts, and raw data
 
 The dashboard is read-only. It does not execute a new evaluation.
@@ -644,7 +689,8 @@ Add `reference_answer` to the affected dataset cases.
 ### Cost shows `N/A`
 
 Check that model, input-token, output-token, and provider paths are mapped and
-that the provider/model pair exists in the pricing catalog.
+that `pricing_config.catalog` contains the exact provider/model pair returned by
+the API.
 
 ### Judge API key is not set
 
@@ -669,11 +715,10 @@ second or use separate output directories.
 
 - Only Gemini is supported as the judge provider.
 - HTTP retries are configured but not implemented.
-- Metric thresholds are stored but not enforced.
 - Metric groups are stored but do not select metrics.
 - Unknown metric names are silently skipped.
 - Display-currency conversion is not implemented.
 - Evaluation API calls are made sequentially.
 - Judge usage and cost are not included in application usage and cost totals.
-- The bundled pricing catalog has limited model coverage.
+- Pricing must be supplied by the caller; the package does not maintain rates.
 - Run directory names have one-second timestamp precision.

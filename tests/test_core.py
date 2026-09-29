@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rag_api_eval.mapper import extract, render_template
-from rag_api_eval.runner import evaluate_rag
+from rag_api_eval.pricing import calculate_cost
+from rag_api_eval.runner import _apply_thresholds, evaluate_rag
 from rag_api_eval.telemetry import normalize_usage
 
 
@@ -19,6 +20,23 @@ class CoreTests(unittest.TestCase):
         usage = normalize_usage({"model": "model-a"})
         self.assertEqual(usage["status"], "missing")
         self.assertIn("Token consumption information", usage["message"])
+
+    def test_thresholds_do_not_fail_not_applicable_metrics(self):
+        records = [{
+            "metrics": {"faithfulness": 0.7},
+            "metric_status": {"context_precision": "N/A — context missing."},
+        }]
+        _apply_thresholds(records, {"faithfulness": 0.8, "context_precision": 0.8})
+        self.assertEqual(records[0]["threshold_results"]["faithfulness"]["status"], "fail")
+        self.assertEqual(records[0]["threshold_results"]["context_precision"]["status"], "not_applicable")
+        self.assertEqual(records[0]["threshold_verdict"], "fail")
+
+    def test_cost_uses_caller_supplied_catalog(self):
+        cost = calculate_cost({
+            "status": "available", "provider": "gemini", "deployment": "api",
+            "model": "demo", "input_tokens": 1_000_000, "output_tokens": 1_000_000,
+        }, {"gemini": {"demo": {"currency": "USD", "input_per_million_tokens": 1, "output_per_million_tokens": 2}}})
+        self.assertEqual(cost["cost"], 3.0)
 
     @patch("rag_api_eval.runner.call_api")
     def test_runner_saves_normalized_result_without_judge(self, call_api):

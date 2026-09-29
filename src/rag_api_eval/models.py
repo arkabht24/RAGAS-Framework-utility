@@ -57,5 +57,6 @@ class ReportingConfig(BaseModel):
 
 
 class PricingConfig(BaseModel):
-    catalog_path: str | None = None
+    """Caller-owned prices; the package never embeds provider rates."""
+    catalog: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     display_currency: str = "USD"

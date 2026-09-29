@@ -28,6 +28,14 @@ def cost_value(record):
     return f"${value:.4f}" if isinstance(value, (float, int)) else "N/A"
 
 
+def threshold_value(record, metric):
+    result = record.get("threshold_results", {}).get(metric)
+    if not result:
+        return "Not configured"
+    status = result.get("status", "not_configured")
+    return {"pass": "Pass", "fail": "Fail", "not_applicable": "N/A"}.get(status, "Not configured")
+
+
 def main() -> None:
     st.set_page_config(page_title="RAG API Evaluation", page_icon="🧪", layout="wide")
     st.markdown("<style>.block-container { max-width: 1400px; padding-top: 2.5rem; }</style>", unsafe_allow_html=True)
@@ -46,17 +54,19 @@ def main() -> None:
     successful = [record for record in records if "error" not in record]
     metrics = sorted({metric for record in successful for metric in record.get("metrics", {})})
 
-    cards = st.columns(5)
+    cards = st.columns(6)
     cards[0].metric("Test cases", summary.get("case_count", len(records)))
     cards[1].metric("Successful API calls", f"{summary.get('successful_cases', len(successful))}/{len(records)}")
     judge = summary.get("judge", {})
     passes = judge.get("passes")
     faithfulness = [record.get("metrics", {}).get("faithfulness") for record in successful]
     faithfulness = [value for value in faithfulness if isinstance(value, (float, int))]
-    cards[2].metric("Judge passes", f"{passes}/{len(successful)}" if passes is not None else "Not configured")
-    cards[3].metric("Avg. faithfulness", f"{sum(faithfulness) / len(faithfulness):.2f}" if faithfulness else "N/A")
+    threshold_summary = summary.get("threshold_verdicts", {})
+    cards[2].metric("Threshold passes", f"{threshold_summary.get('passes', 0)}/{len(successful)}" if summary.get("thresholds") else "Not configured")
+    cards[3].metric("Judge passes", f"{passes}/{len(successful)}" if passes is not None else "Not configured")
+    cards[4].metric("Avg. faithfulness", f"{sum(faithfulness) / len(faithfulness):.2f}" if faithfulness else "N/A")
     total_cost = summary.get("application_cost", {}).get("cost")
-    cards[4].metric("Application cost", f"${total_cost:.4f}" if isinstance(total_cost, (float, int)) else "N/A")
+    cards[5].metric("Application cost", f"${total_cost:.4f}" if isinstance(total_cost, (float, int)) else "N/A")
     token_cards = st.columns(3)
     token_usage = summary.get("application_usage", {})
     token_cards[0].metric("Input tokens", token_usage.get("input_tokens") if token_usage.get("input_tokens") is not None else "Not provided by API")
@@ -69,6 +79,7 @@ def main() -> None:
     for record in records:
         rows.append({
             "Case": record.get("id"), "API status": "error" if record.get("error") else "ok",
+            "Threshold verdict": record.get("threshold_verdict", "Not configured").replace("_", " ").title(),
             "Judge verdict": record.get("judge_assessment", {}).get("status", "Not configured"),
             **{metric.replace("_", " ").title(): metric_value(record, metric) for metric in metrics},
             "Model": usage_value(record, "model"),
@@ -78,9 +89,9 @@ def main() -> None:
             "App cost": cost_value(record), "Latency (ms)": record.get("latency_ms", "Not provided by API"),
         })
     frame = pd.DataFrame(rows)
-    verdicts = sorted(frame["Judge verdict"].dropna().unique().tolist())
-    selected = st.multiselect("Filter Judge verdict", verdicts, default=verdicts)
-    st.dataframe(frame[frame["Judge verdict"].isin(selected)], use_container_width=True, hide_index=True)
+    verdicts = sorted(frame["Threshold verdict"].dropna().unique().tolist())
+    selected = st.multiselect("Filter threshold verdict", verdicts, default=verdicts)
+    st.dataframe(frame[frame["Threshold verdict"].isin(selected)], use_container_width=True, hide_index=True)
 
     case_id = st.selectbox("Inspect a test case", [record.get("id") for record in records])
     record = next(item for item in records if item.get("id") == case_id)
@@ -107,8 +118,13 @@ def main() -> None:
         else:
             st.info("No LLM Judge assessment was configured for this run.")
 
-    st.subheader("Metric scores")
-    st.dataframe(pd.DataFrame({"Metric": [item.replace("_", " ").title() for item in metrics], "Score": [metric_value(record, item) for item in metrics]}), use_container_width=True, hide_index=True)
+    st.subheader("Metric scores and thresholds")
+    st.dataframe(pd.DataFrame({
+        "Metric": [item.replace("_", " ").title() for item in metrics],
+        "Score": [metric_value(record, item) for item in metrics],
+        "Threshold": [record.get("threshold_results", {}).get(item, {}).get("threshold", "Not configured") for item in metrics],
+        "Threshold result": [threshold_value(record, item) for item in metrics],
+    }), use_container_width=True, hide_index=True)
     st.subheader("Application usage and cost")
     st.json({"usage": record.get("application_usage", {"message": "Token consumption information is not present in the API response."}), "cost": record.get("application_cost", {"cost": None})})
     with st.expander("Retrieved contexts"):
