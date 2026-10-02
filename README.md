@@ -58,6 +58,29 @@ response_mapper={
 Missing optional telemetry never fails an evaluation. The dashboard reports the
 field as not received and marks cost as `N/A`.
 
+## PII leakage detection
+
+Enable deterministic answer scanning without an LLM Judge. The utility checks
+email addresses, phone numbers, US SSNs, and Luhn-valid payment-card numbers.
+PII findings contain only masked samples, and the dashboard masks recognized
+PII before rendering stored values.
+
+```python
+pii_config={
+    "enabled": True,
+    "entity_types": ["email", "phone", "us_ssn", "payment_card"],
+}
+```
+
+When enabled, `pii_leakage` is the number of configured PII findings: `0`
+means no leakage was found and a positive value means the answer needs review.
+Add `"pii_leakage": 0` to `metrics_config["thresholds"]` if no findings are
+permitted. This threshold is interpreted as a maximum allowed value.
+
+The normalized answer and unredacted raw API response can still be retained in
+`cases.json`. Use `redact_raw_api_response=True` and appropriate result-directory
+retention controls when evaluating sensitive data.
+
 ## Metric thresholds
 
 Configure deterministic pass/fail thresholds alongside the requested metrics:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-api-eval"
-version = "0.1.0"
+version = "0.2.3"
 description = "Black-box RAG API evaluation with declarative mappers, RAGAS, cost telemetry, and a dashboard."
 readme = "README.md"
 requires-python = ">=3.10"

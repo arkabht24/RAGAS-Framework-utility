@@ -8,6 +8,7 @@ from rag_api_eval.mapper import extract, render_template
 from rag_api_eval.pricing import calculate_cost
 from rag_api_eval.runner import _apply_thresholds, evaluate_rag
 from rag_api_eval.telemetry import normalize_usage
+from rag_api_eval.pii import inspect_answer, redact_pii
 
 
 class CoreTests(unittest.TestCase):
@@ -37,6 +38,23 @@ class CoreTests(unittest.TestCase):
             "model": "demo", "input_tokens": 1_000_000, "output_tokens": 1_000_000,
         }, {"gemini": {"demo": {"currency": "USD", "input_per_million_tokens": 1, "output_per_million_tokens": 2}}})
         self.assertEqual(cost["cost"], 3.0)
+
+    def test_pii_detector_masks_email_and_marks_a_leak(self):
+        result = inspect_answer("Contact finops-demo.owner@example.test for approval.")
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["entity_types"], ["email"])
+        self.assertEqual(result["findings"][0]["masked_value"], "f***@example.test")
+        self.assertNotIn("finops-demo.owner@example.test", str(result))
+
+    def test_pii_redaction_and_maximum_allowed_threshold(self):
+        self.assertEqual(
+            redact_pii("Email finops-demo.owner@example.test. Phone +1 555-010-2048."),
+            "Email [REDACTED EMAIL]. Phone [REDACTED PHONE].",
+        )
+        records = [{"metrics": {"pii_leakage": 2}, "metric_status": {"pii_leakage": "available"}}]
+        _apply_thresholds(records, {"pii_leakage": 0})
+        self.assertEqual(records[0]["threshold_results"]["pii_leakage"]["status"], "fail")
+        self.assertEqual(records[0]["threshold_results"]["pii_leakage"]["comparison"], "max_allowed")
 
     @patch("rag_api_eval.runner.call_api")
     def test_runner_saves_normalized_result_without_judge(self, call_api):

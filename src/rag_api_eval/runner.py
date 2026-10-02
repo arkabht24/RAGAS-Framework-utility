@@ -14,7 +14,8 @@ from typing import Any
 from .client import RAGAPIError, call_api
 from .mapper import extract, normalize_contexts, render_template
 from .metrics import assess_records, evaluate_records
-from .models import APIConfig, JudgeConfig, MetricsConfig, PricingConfig, ReportingConfig, RequestMapper, ResponseMapper
+from .models import APIConfig, JudgeConfig, MetricsConfig, PIIConfig, PricingConfig, ReportingConfig, RequestMapper, ResponseMapper
+from .pii import inspect_answer
 from .pricing import calculate_cost
 from .telemetry import normalize_usage
 
@@ -49,6 +50,15 @@ def _apply_thresholds(records: list[dict], thresholds: dict[str, float]) -> None
             applicability = record.get("metric_status", {}).get(metric, "")
             if applicability.startswith("N/A") or not isinstance(score, (int, float)):
                 results[metric] = {"score": score, "threshold": threshold, "status": "not_applicable"}
+            elif metric == "pii_leakage":
+                # For PII, fewer matches are safer. The threshold is the
+                # maximum number of acceptable findings, normally zero.
+                results[metric] = {
+                    "score": score,
+                    "threshold": threshold,
+                    "status": "pass" if score <= threshold else "fail",
+                    "comparison": "max_allowed",
+                }
             else:
                 results[metric] = {
                     "score": score,
@@ -64,7 +74,7 @@ def _apply_thresholds(records: list[dict], thresholds: dict[str, float]) -> None
         )
 
 
-def _record(case: dict, payload: dict, mapper: ResponseMapper, pricing: PricingConfig, redact: bool) -> dict:
+def _record(case: dict, payload: dict, mapper: ResponseMapper, pricing: PricingConfig, pii: PIIConfig, redact: bool) -> dict:
     answer = extract(payload, mapper.answer_path)
     if not isinstance(answer, str):
         raise ValueError(f"answer_path '{mapper.answer_path}' did not resolve to text.")
@@ -75,6 +85,14 @@ def _record(case: dict, payload: dict, mapper: ResponseMapper, pricing: PricingC
         "generation_calls": extract(payload, mapper.generation_calls_path),
     }
     usage = normalize_usage(raw_usage)
+    pii_detection = inspect_answer(answer, pii.enabled, pii.entity_types)
+    metrics = {}
+    metric_status = {}
+    if pii.enabled:
+        # A count is clearer for a security review: zero is clean and a
+        # positive number tells the reviewer how many findings need review.
+        metrics["pii_leakage"] = pii_detection["finding_count"]
+        metric_status["pii_leakage"] = "available"
     return {
         "id": case.get("id", f"case-{id(case)}"), "question": case.get("question"),
         "reference_answer": case.get("reference_answer"), "answer": answer,
@@ -83,13 +101,15 @@ def _record(case: dict, payload: dict, mapper: ResponseMapper, pricing: PricingC
         "citations": extract(payload, mapper.citations_path, many=True),
         "request_id": extract(payload, mapper.request_id_path), "latency_ms": extract(payload, mapper.latency_ms_path),
         "application_usage": usage, "application_cost": calculate_cost(usage, pricing.catalog),
-        "metrics": {}, "metric_status": {}, "raw_api_response": None if redact else payload,
+        "pii_detection": pii_detection, "metrics": metrics, "metric_status": metric_status,
+        "raw_api_response": None if redact else payload,
     }
 
 
 def evaluate_rag(*, api_config: dict, dataset: str | Path | list[dict], request_mapper: dict,
                  response_mapper: dict, metrics_config: dict | None = None, judge_config: dict | None = None,
-                 pricing_config: dict | None = None, reporting_config: dict | None = None) -> dict:
+                 pricing_config: dict | None = None, pii_config: dict | None = None,
+                 reporting_config: dict | None = None) -> dict:
     """Evaluate a RAG HTTP / HTTPS API and return the saved run summary.
 
     The request/response mappers are declarative. API-specific fields remain at
@@ -99,6 +119,7 @@ def evaluate_rag(*, api_config: dict, dataset: str | Path | list[dict], request_
     request = RequestMapper.model_validate(request_mapper)
     response = ResponseMapper.model_validate(response_mapper)
     metrics = MetricsConfig.model_validate(metrics_config or {})
+    pii = PIIConfig.model_validate(pii_config or {})
     pricing = PricingConfig.model_validate(pricing_config or {})
     reporting = ReportingConfig.model_validate(reporting_config or {})
     cases = _load_cases(dataset)
@@ -110,7 +131,7 @@ def evaluate_rag(*, api_config: dict, dataset: str | Path | list[dict], request_
             raise ValueError("Every dataset case must include a text 'question'.")
         try:
             payload = call_api(api, render_template(request.body_template, case), render_template(request.query_params_template, case))
-            records.append(_record(case, payload, response, pricing, reporting.redact_raw_api_response))
+            records.append(_record(case, payload, response, pricing, pii, reporting.redact_raw_api_response))
         except (RAGAPIError, ValueError, KeyError) as exc:
             records.append({"id": case.get("id"), "question": case.get("question"), "reference_answer": case.get("reference_answer"), "error": str(exc), "metrics": {}, "metric_status": {}})
     successful = [record for record in records if "error" not in record]
@@ -144,10 +165,15 @@ def evaluate_rag(*, api_config: dict, dataset: str | Path | list[dict], request_
             "fails": sum(record.get("threshold_verdict") == "fail" for record in successful),
             "not_applicable": sum(record.get("threshold_verdict") == "not_applicable" for record in successful),
         },
+        "pii_detection": {
+            "enabled": pii.enabled,
+            "leakage_cases": sum(record.get("pii_detection", {}).get("status") == "fail" for record in successful),
+            "clean_cases": sum(record.get("pii_detection", {}).get("status") == "pass" for record in successful),
+        },
     }
     (run_dir / "cases.json").write_text(json.dumps(_safe(records), indent=2), encoding="utf-8")
     (run_dir / "summary.json").write_text(json.dumps(_safe(summary), indent=2), encoding="utf-8")
-    (run_dir / "config_snapshot.json").write_text(json.dumps({"api_config": api_config, "request_mapper": request_mapper, "response_mapper": response_mapper, "metrics_config": metrics_config, "pricing_config": pricing_config}, indent=2), encoding="utf-8")
+    (run_dir / "config_snapshot.json").write_text(json.dumps({"api_config": api_config, "request_mapper": request_mapper, "response_mapper": response_mapper, "metrics_config": metrics_config, "pricing_config": pricing_config, "pii_config": pii_config}, indent=2), encoding="utf-8")
     summary["run_dir"] = str(run_dir)
     if reporting.launch_dashboard:
         environment = {**os.environ, "RAG_EVAL_RESULTS_DIR": str(run_dir.parent.resolve())}

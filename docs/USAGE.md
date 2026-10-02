@@ -87,9 +87,10 @@ For every dataset case, the utility performs the following operations:
 4. Extracts fields from the JSON response using JSONPath expressions.
 5. Normalizes the answer, contexts, metadata, and usage telemetry.
 6. Calculates application cost when model and token data are available.
-7. Runs requested RAGAS metrics on successful cases.
-8. Optionally asks an LLM judge for a concise verdict.
-9. Saves case-level results, a run summary, and a configuration snapshot.
+7. Runs deterministic PII leakage detection when it is enabled.
+8. Runs requested RAGAS metrics on successful cases.
+9. Optionally asks an LLM judge for a concise verdict.
+10. Saves case-level results, a run summary, and a configuration snapshot.
 
 An API or mapping failure is normally recorded against the affected case. It
 does not prevent the remaining dataset cases from being sent to the API.
@@ -312,6 +313,44 @@ The available metric names are:
 | `context_recall` | Yes | Yes |
 | `answer_relevancy` | No | No |
 | `answer_correctness` | No | Yes |
+
+### PII leakage detection
+
+PII detection is a deterministic security check over the normalized system
+answer. It is not an LLM Judge call and it does not consume RAGAS/Gemini
+tokens. Enable it independently of the RAGAS metric list:
+
+```python
+pii_config = {
+    "enabled": True,
+    "entity_types": ["email", "phone", "us_ssn", "payment_card"],
+}
+```
+
+Supported entity types are email addresses, common phone-number formats, US
+SSNs, and Luhn-valid payment-card numbers. The result records a binary
+`pii_leakage` metric: `0` means no configured pattern was found; a positive
+value is the number of possible leaked values. Findings are saved with a masked sample,
+such as `a***@example.test` or `***1234`; they never store the detected value.
+
+To require a clean result in the threshold verdict, add this threshold even if
+no RAGAS metric is selected:
+
+```python
+metrics_config = {
+    "metrics": [],
+    "thresholds": {"pii_leakage": 0},
+}
+```
+
+The dashboard shows a run-level leakage count, a per-case PII status/types,
+and masked findings in the case-detail panel. Recognized PII is masked before
+questions, answers, references, contexts, and the normalized result are rendered
+in the dashboard. The saved normalized answer can still contain the original
+text, and raw API responses are retained unless disabled. For a production
+report that must limit potentially sensitive output, also configure
+`reporting_config={"redact_raw_api_response": True}` and apply your normal
+data-retention controls to the result directory.
 
 Configure metrics and the Gemini judge as follows:
 

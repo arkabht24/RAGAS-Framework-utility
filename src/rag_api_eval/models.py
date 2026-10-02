@@ -41,6 +41,14 @@ class MetricsConfig(BaseModel):
     thresholds: dict[str, float] = Field(default_factory=dict)
 
 
+class PIIConfig(BaseModel):
+    """Controls deterministic PII checks on the normalized API answer."""
+    enabled: bool = False
+    entity_types: list[Literal["email", "phone", "us_ssn", "payment_card"]] = Field(
+        default_factory=lambda: ["email", "phone", "us_ssn", "payment_card"]
+    )
+
+
 class JudgeConfig(BaseModel):
     provider: Literal["gemini"] = "gemini"
     model: str

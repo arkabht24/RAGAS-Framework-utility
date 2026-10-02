@@ -7,6 +7,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+# Streamlit executes this module as a script, not as ``rag_api_eval.dashboard``.
+# Use an absolute package import so both ``rag-eval`` and direct module imports work.
+from rag_api_eval.pii import redact_pii
+
 
 def display(value, places=2):
     return round(value, places) if isinstance(value, float) else value
@@ -34,6 +38,17 @@ def threshold_value(record, metric):
         return "Not configured"
     status = result.get("status", "not_configured")
     return {"pass": "Pass", "fail": "Fail", "not_applicable": "N/A"}.get(status, "Not configured")
+
+
+def redact_display(value):
+    """Protect dashboard-rendered values without modifying the saved result."""
+    if isinstance(value, str):
+        return redact_pii(value)
+    if isinstance(value, list):
+        return [redact_display(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_display(item) for key, item in value.items()}
+    return value
 
 
 def main() -> None:
@@ -64,7 +79,12 @@ def main() -> None:
     threshold_summary = summary.get("threshold_verdicts", {})
     cards[2].metric("Threshold passes", f"{threshold_summary.get('passes', 0)}/{len(successful)}" if summary.get("thresholds") else "Not configured")
     cards[3].metric("Judge passes", f"{passes}/{len(successful)}" if passes is not None else "Not configured")
-    cards[4].metric("Avg. faithfulness", f"{sum(faithfulness) / len(faithfulness):.2f}" if faithfulness else "N/A")
+    pii_summary = summary.get("pii_detection", {})
+    pii_text = (
+        f"{pii_summary.get('leakage_cases', 0)} leakage case(s)"
+        if pii_summary.get("enabled") else "Not configured"
+    )
+    cards[4].metric("PII leakage detection", pii_text)
     total_cost = summary.get("application_cost", {}).get("cost")
     cards[5].metric("Application cost", f"${total_cost:.4f}" if isinstance(total_cost, (float, int)) else "N/A")
     token_cards = st.columns(3)
@@ -81,6 +101,8 @@ def main() -> None:
             "Case": record.get("id"), "API status": "error" if record.get("error") else "ok",
             "Threshold verdict": record.get("threshold_verdict", "Not configured").replace("_", " ").title(),
             "Judge verdict": record.get("judge_assessment", {}).get("status", "Not configured"),
+            "PII detection": record.get("pii_detection", {}).get("status", "not_configured").replace("_", " ").title(),
+            "PII types": ", ".join(record.get("pii_detection", {}).get("entity_types", [])) or "None",
             **{metric.replace("_", " ").title(): metric_value(record, metric) for metric in metrics},
             "Model": usage_value(record, "model"),
             "Input tokens": usage_value(record, "input_tokens"),
@@ -100,12 +122,23 @@ def main() -> None:
     with left:
         st.subheader("Question and response")
         st.markdown("**Question**")
-        st.write(record.get("question"))
+        st.write(redact_display(record.get("question")))
         st.markdown("**System answer**")
-        st.write(record.get("answer", record.get("error", "No answer returned.")))
+        st.write(redact_display(record.get("answer", record.get("error", "No answer returned."))))
         st.markdown("**Reference answer**")
-        st.write(record.get("reference_answer") or "Not provided by dataset.")
+        st.write(redact_display(record.get("reference_answer")) or "Not provided by dataset.")
     with right:
+        st.subheader("PII leakage detection")
+        pii = record.get("pii_detection", {})
+        if pii:
+            st.metric("Status", pii.get("status", "not_configured").replace("_", " ").title())
+            st.write(pii.get("message", "No PII result available."))
+            if pii.get("findings"):
+                st.caption("Findings and displayed API text are masked. Raw-result retention follows the reporting configuration.")
+                st.dataframe(pd.DataFrame(pii["findings"])[["entity_type", "masked_value"]], use_container_width=True, hide_index=True)
+        else:
+            st.info("PII leakage detection was not present in this run.")
+
         st.subheader("LLM Judge assessment")
         if assessment:
             st.metric("Verdict", assessment.get("status", "needs_review").replace("_", " ").title())
@@ -132,11 +165,11 @@ def main() -> None:
         if contexts:
             for index, context in enumerate(contexts, 1):
                 st.markdown(f"**Context {index}**")
-                st.text(context)
+                st.text(redact_display(context))
         else:
             st.write("No retrieved contexts were provided by the API.")
     with st.expander("Raw normalized result"):
-        st.json(record)
+        st.json(redact_display(record))
 
 
 if __name__ == "__main__":
